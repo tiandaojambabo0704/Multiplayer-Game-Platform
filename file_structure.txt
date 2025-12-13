@@ -1,0 +1,30 @@
+game-store-system/
+├── server/             # Server 端
+│   ├── server.py         # 主啟動程式
+│   ├── database.py       # 資料庫
+│   ├── data/ (自動生成)
+|       └── developer.json, downloads.json, games.json, players.json, rooms.json, reviews.json
+│   └── uploaded_games/  (自動生成)
+├── developer/          # Developer 端
+│   ├── developer_client.py
+│   └── games/          # 遊戲開發目錄
+│         └── guess_number/  # CLI
+|                 └── client.py
+|                 └── server.py
+|                 └── config.json
+|         └── tic_tac_toe/   # GUI
+|                 └── client.py
+|                 └── server.py
+|                 └── config.json
+|         └── card_game/ # Multiplayer
+|                 └── client.py
+|                 └── server.py
+|                 └── config.json
+├── player/             # Player 端
+│   ├── player_client.py
+│   └── downloads/      # 玩家下載目錄 (自動生成)
+├── README.md           # 完整說明
+├── Makefile           # 快速指令
+├── requirements.txt   # Python 依賴
+
+
