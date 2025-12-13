@@ -1,0 +1,9 @@
+{
+    "game_name": "Guess Number Battle",
+    "type": "cli",
+    "min_players": 2,
+    "max_players": 2,
+    "server_command": "python server.py",
+    "client_command": "python client.py",
+    "description": "Two players compete to guess a number between 1 and 100. First to guess correctly wins!"
+}

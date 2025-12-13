@@ -1,0 +1,9 @@
+{
+    "game_name": "Card Battle",
+    "type": "gui",
+    "min_players": 2,
+    "max_players": 5,
+    "server_command": "python server.py",
+    "client_command": "python client.py",
+    "description": "Each player gets 7 cards (1-100). Each round, players select one card to play. Highest number wins the round. After 7 rounds, player with most wins is the champion!"
+}
