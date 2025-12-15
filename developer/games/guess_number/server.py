@@ -20,6 +20,7 @@ class GuessNumberServer:
         self.game_started = False
         self.winner = None
         self.current_turn = 1  
+        self.game_ended = False  
         self.lock = threading.Lock() 
         
     def start(self):
@@ -38,7 +39,8 @@ class GuessNumberServer:
             self.player_info[client] = {
                 'num': player_num,
                 'turn': (player_num == 1),  
-                'range': [1, 100]  
+                'range': [1, 100],
+                'active': True  
             }
             print(f"Player {player_num} connected from {addr}")
             welcome_msg = f"You are Player {player_num}! "
@@ -57,25 +59,68 @@ class GuessNumberServer:
         
         for client in self.clients:
             thread = threading.Thread(target=self.handle_client, args=(client,))
+            thread.daemon = True
             thread.start()
+            
+        try:
+            while threading.active_count() > 1 and not self.game_ended:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            self.end_game("Server shutdown")
     
     def broadcast(self, message, exclude=None):
+        if self.game_ended:
+            return
+            
         for client in self.clients:
-            if client != exclude:
+            if client != exclude and self.player_info.get(client, {}).get('active', False):
                 try:
                     client.sendall(message.encode())
                 except:
                     pass
     
     def send_to_player(self, client, message):
+        if self.game_ended or not self.player_info.get(client, {}).get('active', False):
+            return
+            
         try:
             client.sendall(message.encode())
         except:
             pass
     
+    def end_game(self, reason="Game ended"):
+        with self.lock:
+            if self.game_ended:
+                return
+                
+            self.game_ended = True
+            self.winner = None
+            
+            end_msg = f"\n{'⚠️'*10}\n"
+            end_msg += f"⚠️  {reason}\n"
+            end_msg += f"⚠️  Game terminated!\n"
+            end_msg += f"{'⚠️'*10}\n"
+            end_msg += "GAME_END\n"
+            
+            for client in self.clients:
+                if self.player_info.get(client, {}).get('active', False):
+                    try:
+                        client.sendall(end_msg.encode())
+                        client.close()
+                    except:
+                        pass
+            
+            print(f"\n[Game ended] {reason}")
+    
     def notify_turn(self):
+        if self.game_ended:
+            return
+            
         current_player = None
         for client, info in self.player_info.items():
+            if not info['active']:
+                continue
+                
             if info['num'] == self.current_turn:
                 current_player = client
                 info['turn'] = True
@@ -99,21 +144,31 @@ class GuessNumberServer:
             player_num = self.player_info[client]['num']
             player_range = self.player_info[client]['range']
             
-            while not self.winner:
-                if not self.player_info[client]['turn']:
+            while not self.game_ended:
+                if not self.player_info[client]['active'] or not self.player_info[client]['turn']:
                     time.sleep(0.1)  
                     continue
                 
-                data = client.recv(1024).decode().strip()
-                if not data:
-                    break
-                
-                if not self.player_info[client]['turn']:
-                    self.send_to_player(client, "⏳ Not your turn! Wait for your turn.\n")
-                    continue
-                
                 try:
-                    guess = int(data)
+                    client.settimeout(1.0)
+                    data = client.recv(1024).decode().strip()
+                    
+                    if not data:
+                        self.player_disconnected(client, player_num)
+                        break
+                    
+                    if not self.player_info[client]['turn'] or not self.player_info[client]['active']:
+                        self.send_to_player(client, "⏳ Not your turn! Wait for your turn.\n")
+                        continue
+                    
+                    try:
+                        guess = int(data)
+                    except ValueError:
+                        guess = 0
+                        guess_msg = f"\n{'='*30}\n"
+                        guess_msg += f"Player {player_num} entered non-number, default to 0!\n"
+                        guess_msg += f"{'='*30}\n"
+                        self.broadcast(guess_msg, exclude=client)
                     
                     if guess < 1 or guess > 100:
                         self.send_to_player(client, f"⚠️  Warning: Number should be 1-100, but let's try it anyway!\n")
@@ -125,7 +180,7 @@ class GuessNumberServer:
                     
                     if guess == self.secret_number:
                         with self.lock:
-                            if not self.winner:  
+                            if not self.winner and not self.game_ended:
                                 self.winner = player_num
                                 win_msg = f"\n{'🎉'*10}\n"
                                 win_msg += f"🎉 Player {player_num} guessed correctly!\n"
@@ -133,6 +188,7 @@ class GuessNumberServer:
                                 win_msg += f"{'🎉'*10}\n"
                                 win_msg += "GAME_END\n"
                                 self.broadcast(win_msg)
+                                self.game_ended = True
                                 break
                     
                     if guess < self.secret_number:
@@ -158,16 +214,49 @@ class GuessNumberServer:
                     self.current_turn = 2 if self.current_turn == 1 else 1
                     self.notify_turn()
                     
-                except ValueError:
-                    self.send_to_player(client, "❌ Please enter a valid number!\n")
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    self.player_disconnected(client, player_num)
+                    break
         
         except Exception as e:
             print(f"Error with player {player_num}: {e}")
+            self.player_disconnected(client, player_num)
         finally:
-            client.close()
+            try:
+                client.close()
+            except:
+                pass
+    
+    def player_disconnected(self, client, player_num):
+        if self.game_ended:
+            return
+            
+        self.player_info[client]['active'] = False
+        print(f"\n[System] Player {player_num} disconnected")
+        
+        for other_client, info in self.player_info.items():
+            if other_client != client and info['active']:
+                disconnect_msg = f"\n{'⚠️'*10}\n"
+                disconnect_msg += f"⚠️  Player {player_num} has disconnected!\n"
+                disconnect_msg += f"⚠️  Game cannot continue.\n"
+                disconnect_msg += f"{'⚠️'*10}\n"
+                disconnect_msg += "GAME_END\n"
+                
+                try:
+                    other_client.sendall(disconnect_msg.encode())
+                except:
+                    pass
+        
+        self.end_game(f"Player {player_num} disconnected")
 
 if __name__ == '__main__':
     import sys
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 6000
     server = GuessNumberServer(port)
-    server.start()
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\n\n[Server] Shutting down...")
+        server.end_game("Server manually stopped")

@@ -24,6 +24,7 @@ class CardBattleClient:
         self.receive_thread = None
         self.running = True
         self.game_ended = False 
+        self.connected = False
         
         # GUI
         self.root = tk.Tk()
@@ -197,7 +198,10 @@ class CardBattleClient:
     def connect(self):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5)
             self.socket.connect((self.host, self.port))
+            self.socket.settimeout(None)
+            self.connected = True
             
             self.receive_thread = threading.Thread(target=self.receive_messages)
             self.receive_thread.daemon = True
@@ -211,6 +215,9 @@ class CardBattleClient:
             return False
     
     def send_message(self, data):
+        if not self.connected:
+            return False
+            
         try:
             message = json.dumps(data) + '\n'
             self.socket.sendall(message.encode())
@@ -221,7 +228,7 @@ class CardBattleClient:
     
     def receive_messages(self):
         buffer = ''
-        while self.running:
+        while self.running and self.connected:
             try:
                 data = self.socket.recv(1024).decode()
                 if not data:
@@ -236,13 +243,46 @@ class CardBattleClient:
                             self.root.after(0, self.handle_message, message)
                         except json.JSONDecodeError:
                             print(f"Invalid JSON received: {line}")
+            except socket.timeout:
+                continue
+            except ConnectionError:
+                break
             except Exception as e:
                 if self.running:
                     print(f"Error receiving message: {e}")
                 break
         
         if self.running:
-            self.root.after(0, self.handle_disconnect)
+            self.root.after(0, self.handle_disconnect, "Lost connection to server")
+    
+    def handle_disconnect(self, reason):
+        if not self.running:
+            return
+            
+        self.connected = False
+        self.running = False
+        
+        # Show disconnect message and close window
+        messagebox.showinfo("Game Ended", reason)
+        
+        # Close socket
+        try:
+            self.socket.close()
+        except:
+            pass
+        
+        # Close window after short delay
+        self.root.after(500, self.close_window)
+    
+    def close_window(self):
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except:
+            pass
+        
+        print("Window closed due to disconnect")
+        sys.exit(0)
     
     def handle_message(self, message):
         msg_type = message['type']
@@ -276,6 +316,19 @@ class CardBattleClient:
             total = len(self.players)
             self.ready_label.config(text=f"Ready: {ready_count}/{total}")
             
+        elif msg_type == 'player_disconnected':
+            player_name = message['name']
+            reason = message['reason']
+            
+            # Remove player from list
+            player_id = message['player_id']
+            if player_id in self.players:
+                del self.players[player_id]
+            self.update_players_list()
+            
+            # Show disconnect message and close window
+            self.handle_disconnect(f"{reason}\nGame cannot continue.")
+            
         elif msg_type == 'game_start':
             self.player_id = message['player_id']
             self.cards = message['cards']
@@ -301,7 +354,7 @@ class CardBattleClient:
             remaining = message['remaining']
             total = message['total_players']
             
-            self.selection_label.config(text=f"✅ You selected card {card}")
+            self.selection_label.config(text=f"You selected card {card}")
             status_text = f"You selected card {card}. Waiting: {remaining}/{total} players"
             self.play_status.config(text=status_text)
             
@@ -335,29 +388,134 @@ class CardBattleClient:
             self.show_round_result(result)
             
         elif msg_type == 'game_end':
-            final_scores = message['final_scores']
-            champions = message['champions']
-            
-            self.show_final_results(final_scores, champions)
-            
-            self.game_ended = True
-            self.root.after(3000, self.close_window) 
+            if message.get('forced_shutdown', False):
+                reason = message.get('reason', 'Game ended')
+                self.handle_disconnect(f"{reason}\nGame cannot continue.")
+            else:
+                final_scores = message['final_scores']
+                champions = message['champions']
+                
+                self.show_final_results(final_scores, champions)
+                
+                self.game_ended = True
+                self.root.after(3000, self.close_window)
     
-    def close_window(self):
-        self.running = False
-        try:
-            self.socket.close()
-        except:
-            pass
-        self.root.quit()
-        self.root.destroy()
-        print("Game over, Window closed")
-        sys.exit(0)  
+    def update_players_list(self):
+        self.players_listbox.delete(0, tk.END)
+        for pid, name in sorted(self.players.items()):
+            try:
+                pid_int = int(pid)
+                display_name = f"{name} (Player {pid_int + 1})" if name else f"Player {pid_int + 1}"
+            except (ValueError, TypeError):
+                display_name = f"{name} (Player {int(pid) + 1})" if name else f"Player {int(pid) + 1}"
+            self.players_listbox.insert(tk.END, display_name)
     
-    def handle_disconnect(self):
-        if self.running:
-            messagebox.showwarning("Disconnected", "Lost connection to server")
-            self.root.quit()
+    def update_scores(self, scores):
+        self.scores = scores
+        self.score_text.config(state=tk.NORMAL)
+        self.score_text.delete(1.0, tk.END)
+        
+        self.score_text.insert(tk.END, "Current Scores:\n")
+        self.score_text.insert(tk.END, "-" * 20 + "\n")
+        
+        for pid, score in sorted(scores.items()):
+            try:
+                player_id = int(pid)
+            except (ValueError, TypeError):
+                player_id = pid
+            
+            player_name = self.players.get(player_id, f'Player {int(player_id) + 1}')
+            if player_id == self.player_id:
+                self.score_text.insert(tk.END, f"{player_name}: {score} wins\n")
+            else:
+                self.score_text.insert(tk.END, f"  {player_name}: {score} wins\n")
+        
+        self.score_text.config(state=tk.DISABLED)
+    
+    def show_round_result(self, result):
+        self.result_text.config(state=tk.NORMAL)
+        
+        self.result_text.insert(tk.END, f"\n=== Round {result['round']} ===\n")
+        self.result_text.insert(tk.END, f"Highest card: {result['max_card']}\n")
+        self.result_text.insert(tk.END, f"Cards played:\n")
+        
+        for pid, card in sorted(result['cards'].items()):
+            try:
+                pid_int = int(pid)
+                player_name = self.players.get(pid_int, f'Player {pid_int + 1}')
+            except (ValueError, TypeError):
+                player_name = self.players.get(pid, f'Player {int(pid) + 1}')
+            
+            if pid == self.player_id or (isinstance(self.player_id, int) and int(pid) == self.player_id):
+                self.result_text.insert(tk.END, f"  {player_name}: {card}\n")
+            else:
+                self.result_text.insert(tk.END, f"    {player_name}: {card}\n")
+        
+        winners_text = []
+        for winner in result['winners']:
+            try:
+                winner_id = int(winner)
+                player_name = self.players.get(winner_id, f'Player {winner_id + 1}')
+            except (ValueError, TypeError):
+                player_name = self.players.get(winner, f'Player {int(winner) + 1}')
+            winners_text.append(player_name)
+        
+        self.result_text.insert(tk.END, f"Winner(s): {', '.join(winners_text)}\n")
+        self.result_text.insert(tk.END, "-" * 30 + "\n")
+        
+        self.result_text.see(tk.END)
+        self.result_text.config(state=tk.DISABLED)
+        
+        self.play_status.config(text=f"Round {result['round']} completed. Highest card: {result['max_card']}")
+    
+    def show_final_results(self, final_scores, champions):
+        self.result_text.config(state=tk.NORMAL)
+        self.result_text.delete(1.0, tk.END)
+        
+        self.result_text.insert(tk.END, "\n" + "="*30 + "\n")
+        self.result_text.insert(tk.END, "GAME OVER!\n")
+        self.result_text.insert(tk.END, "="*30 + "\n\n")
+        self.result_text.insert(tk.END, "FINAL SCORES:\n")
+        self.result_text.insert(tk.END, "-"*20 + "\n")
+        
+        final_scores_int = {}
+        for pid_str, score in final_scores.items():
+            try:
+                pid_int = int(pid_str)
+                final_scores_int[pid_int] = score
+            except (ValueError, TypeError):
+                final_scores_int[pid_str] = score
+        
+        for pid, score in sorted(final_scores_int.items()):
+            player_name = self.players.get(pid, f'Player {int(pid) + 1}')
+            if pid == self.player_id or (isinstance(self.player_id, int) and int(pid) == self.player_id):
+                self.result_text.insert(tk.END, f"{player_name}: {score} wins\n")
+            else:
+                self.result_text.insert(tk.END, f"  {player_name}: {score} wins\n")
+        
+        self.result_text.insert(tk.END, "\n")
+        
+        champion_names = []
+        for champion in champions:
+            try:
+                champ_id = int(champion)
+                player_name = self.players.get(champ_id, f'Player {champ_id + 1}')
+            except (ValueError, TypeError):
+                player_name = self.players.get(champion, f'Player {int(champion) + 1}')
+            champion_names.append(player_name)
+        
+        self.result_text.insert(tk.END, "CHAMPION(S):\n")
+        for champion in champion_names:
+            self.result_text.insert(tk.END, f"  {champion}\n")
+        
+        self.result_text.insert(tk.END, "\n" + "="*30 + "\n")
+        
+        self.result_text.insert(tk.END, "\nThe window will close in 3 seconds...\n")
+        
+        self.result_text.see(tk.END)
+        self.result_text.config(state=tk.DISABLED)
+        
+        self.play_status.config(text="Game over! The window will close in 3 seconds.")
     
     def set_name(self):
         name = self.name_entry.get().strip()
@@ -391,137 +549,25 @@ class CardBattleClient:
             self.selected_this_round = True
             self.played_cards.append(card)
             self.update_card_buttons_state()
-            self.selection_label.config(text=f"✅ You selected card {card}")
+            self.selection_label.config(text=f"You selected card {card}")
             
             self.play_status.config(text=f"You selected card {card}. Waiting for others...")
-    
-    def update_players_list(self):
-        self.players_listbox.delete(0, tk.END)
-        for pid, name in sorted(self.players.items()):
-            try:
-                pid_int = int(pid)
-                display_name = f"{name} (Player {pid_int + 1})" if name else f"Player {pid_int + 1}"
-            except (ValueError, TypeError):
-                display_name = f"{name} (Player {int(pid) + 1})" if name else f"Player {int(pid) + 1}"
-            self.players_listbox.insert(tk.END, display_name)
-    
-    def update_scores(self, scores):
-        self.scores = scores
-        self.score_text.config(state=tk.NORMAL)
-        self.score_text.delete(1.0, tk.END)
-        
-        self.score_text.insert(tk.END, "Current Scores:\n")
-        self.score_text.insert(tk.END, "-" * 20 + "\n")
-        
-        for pid, score in sorted(scores.items()):
-            try:
-                player_id = int(pid)
-            except (ValueError, TypeError):
-                player_id = pid
-            
-            player_name = self.players.get(player_id, f'Player {int(player_id) + 1}')
-            if player_id == self.player_id:
-                self.score_text.insert(tk.END, f"👉 {player_name}: {score} wins\n")
-            else:
-                self.score_text.insert(tk.END, f"  {player_name}: {score} wins\n")
-        
-        self.score_text.config(state=tk.DISABLED)
-    
-    def show_round_result(self, result):
-        self.result_text.config(state=tk.NORMAL)
-        
-        self.result_text.insert(tk.END, f"\n=== Round {result['round']} ===\n")
-        self.result_text.insert(tk.END, f"Highest card: {result['max_card']}\n")
-        self.result_text.insert(tk.END, f"Cards played:\n")
-        
-        for pid, card in sorted(result['cards'].items()):
-            try:
-                pid_int = int(pid)
-                player_name = self.players.get(pid_int, f'Player {pid_int + 1}')
-            except (ValueError, TypeError):
-                player_name = self.players.get(pid, f'Player {int(pid) + 1}')
-            
-            if pid == self.player_id or (isinstance(self.player_id, int) and int(pid) == self.player_id):
-                self.result_text.insert(tk.END, f"  → {player_name}: {card}\n")
-            else:
-                self.result_text.insert(tk.END, f"    {player_name}: {card}\n")
-        
-        winners_text = []
-        for winner in result['winners']:
-            try:
-                winner_id = int(winner)
-                player_name = self.players.get(winner_id, f'Player {winner_id + 1}')
-            except (ValueError, TypeError):
-                player_name = self.players.get(winner, f'Player {int(winner) + 1}')
-            winners_text.append(player_name)
-        
-        self.result_text.insert(tk.END, f"🏆 Winner(s): {', '.join(winners_text)}\n")
-        self.result_text.insert(tk.END, "-" * 30 + "\n")
-        
-        self.result_text.see(tk.END)
-        self.result_text.config(state=tk.DISABLED)
-        
-        self.play_status.config(text=f"Round {result['round']} completed. Highest card: {result['max_card']}")
-    
-    def show_final_results(self, final_scores, champions):
-        self.result_text.config(state=tk.NORMAL)
-        self.result_text.delete(1.0, tk.END)
-        
-        self.result_text.insert(tk.END, "\n" + "="*30 + "\n")
-        self.result_text.insert(tk.END, "🎮 GAME OVER! 🎮\n")
-        self.result_text.insert(tk.END, "="*30 + "\n\n")
-        self.result_text.insert(tk.END, "FINAL SCORES:\n")
-        self.result_text.insert(tk.END, "-"*20 + "\n")
-        
-        final_scores_int = {}
-        for pid_str, score in final_scores.items():
-            try:
-                pid_int = int(pid_str)
-                final_scores_int[pid_int] = score
-            except (ValueError, TypeError):
-                final_scores_int[pid_str] = score
-        
-        for pid, score in sorted(final_scores_int.items()):
-            player_name = self.players.get(pid, f'Player {int(pid) + 1}')
-            if pid == self.player_id or (isinstance(self.player_id, int) and int(pid) == self.player_id):
-                self.result_text.insert(tk.END, f"👉 {player_name}: {score} wins\n")
-            else:
-                self.result_text.insert(tk.END, f"  {player_name}: {score} wins\n")
-        
-        self.result_text.insert(tk.END, "\n")
-        
-        champion_names = []
-        for champion in champions:
-            try:
-                champ_id = int(champion)
-                player_name = self.players.get(champ_id, f'Player {champ_id + 1}')
-            except (ValueError, TypeError):
-                player_name = self.players.get(champion, f'Player {int(champion) + 1}')
-            champion_names.append(player_name)
-        
-        self.result_text.insert(tk.END, "🏆 CHAMPION(S):\n")
-        for champion in champion_names:
-            self.result_text.insert(tk.END, f"  {champion}\n")
-        
-        self.result_text.insert(tk.END, "\n" + "="*30 + "\n")
-        
-        self.result_text.insert(tk.END, "\nThe window will close in 3 seconds...\n")
-        
-        self.result_text.see(tk.END)
-        self.result_text.config(state=tk.DISABLED)
-        
-        self.play_status.config(text="Game over! The window will close in 3 seconds.")
-    
-    def reset_game(self):
-        pass
     
     def run(self):
         if self.connect():
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+            
+            # Handle Ctrl+C
+            def handle_ctrl_c(event=None):
+                self.on_closing()
+            
+            self.root.bind('<Control-c>', handle_ctrl_c)
+            
             self.root.mainloop()
     
     def on_closing(self):
         self.running = False
+        self.connected = False
         try:
             self.socket.close()
         except:

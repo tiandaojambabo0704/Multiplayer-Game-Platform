@@ -20,10 +20,14 @@ class TicTacToeClient:
         self.player_num = None
         self.symbol = None
         self.current_turn = None
+        self.connected = False
         
         self.root = tk.Tk()
         self.root.title("Tic Tac Toe")
         self.root.geometry("400x450")
+        
+        # Handle window close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.info_label = tk.Label(self.root, text="Connecting...", font=("Arial", 14))
         self.info_label.pack(pady=10)
@@ -46,6 +50,7 @@ class TicTacToeClient:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
+            self.connected = True
             
             receive_thread = threading.Thread(target=self.receive_messages)
             receive_thread.daemon = True
@@ -65,10 +70,12 @@ class TicTacToeClient:
     
     def receive_messages(self):
         buffer = ''
-        while True:
+        while self.connected:
             try:
+                self.socket.settimeout(1.0)
                 data = self.socket.recv(1024).decode()
                 if not data:
+                    self.handle_disconnect("Lost connection to server")
                     break
                 
                 buffer += data
@@ -77,8 +84,30 @@ class TicTacToeClient:
                     if line:
                         message = json.loads(line)
                         self.handle_message(message)
-            except:
+                        
+            except socket.timeout:
+                continue
+            except ConnectionError:
+                self.handle_disconnect("Lost connection to server")
                 break
+            except json.JSONDecodeError:
+                continue
+            except Exception:
+                self.handle_disconnect("Connection error")
+                break
+    
+    def handle_disconnect(self, message):
+        if not self.connected:
+            return
+            
+        self.connected = False
+        
+        # Update GUI in main thread
+        self.root.after(0, lambda: self.show_disconnect_message(message))
+    
+    def show_disconnect_message(self, message):
+        messagebox.showinfo("Game Ended", message)
+        self.root.quit()
     
     def handle_message(self, message):
         msg_type = message['type']
@@ -107,18 +136,31 @@ class TicTacToeClient:
             result = message['result']
             if result == 'draw':
                 messagebox.showinfo("Game Over", "Draw!")
-            else:
+                self.root.quit()
+            elif result == 'win':
                 winner = message['winner']
                 if winner == self.player_num:
                     messagebox.showinfo("Game Over", "You win! 🎉")
                 else:
                     messagebox.showinfo("Game Over", "You lose!")
+                self.root.quit()
+            elif result == 'disconnect':
+                reason = message.get('reason', 'Opponent disconnected')
+                messagebox.showinfo("Game Ended", reason)
+                self.root.quit()
+        
+        elif msg_type == 'disconnect':
+            reason = message.get('reason', 'Opponent disconnected')
+            messagebox.showinfo("Game Ended", reason)
             self.root.quit()
         
         elif msg_type == 'error':
             messagebox.showwarning("Error", message['message'])
     
     def make_move(self, row, col):
+        if not self.connected:
+            return
+            
         if self.current_turn != self.player_num:
             return
         
@@ -128,11 +170,21 @@ class TicTacToeClient:
             'col': col
         })
     
+    def on_closing(self):
+        if self.connected:
+            self.connected = False
+            try:
+                self.socket.close()
+            except:
+                pass
+        self.root.quit()
+    
     def run(self):
         if self.connect():
             self.root.mainloop()
         try:
-            self.socket.close()
+            if self.socket:
+                self.socket.close()
         except:
             pass
 

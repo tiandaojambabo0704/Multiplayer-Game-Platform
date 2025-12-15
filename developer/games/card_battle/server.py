@@ -24,6 +24,7 @@ class CardBattleServer:
         self.scores = {}  
         self.lock = threading.Lock()
         self.game_thread = None
+        self.shutting_down = False
         
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -34,45 +35,53 @@ class CardBattleServer:
         print(f"[Card Battle] Server started on port {self.port}")
         print("Waiting for players (2-5 players required)...")
         
-        while True:
-            client, addr = server.accept()
-            if len(self.clients) >= 5:
-                self.send_message(client, {
-                    'type': 'error',
-                    'message': 'Room is full (max 5 players)'
-                })
-                client.close()
-                continue
+        try:
+            while not self.shutting_down:
+                client, addr = server.accept()
+                if len(self.clients) >= 5:
+                    self.send_message(client, {
+                        'type': 'error',
+                        'message': 'Room is full (max 5 players)'
+                    })
+                    client.close()
+                    continue
+                    
+                player_id = len(self.clients)
                 
-            player_id = len(self.clients)
-            
-            with self.lock:
-                self.clients.append(client)
-                self.client_info[client] = {
+                with self.lock:
+                    self.clients.append(client)
+                    self.client_info[client] = {
+                        'player_id': player_id,
+                        'name': f'Player {player_id + 1}',
+                        'ready': False,
+                        'connected': True
+                    }
+                    self.scores[player_id] = 0
+                
+                self.send_message(client, {
+                    'type': 'welcome',
+                    'player_id': player_id,
+                    'message': f'Welcome Player {player_id + 1}! Please set your name.'
+                })
+                
+                self.broadcast({
+                    'type': 'player_joined',
                     'player_id': player_id,
                     'name': f'Player {player_id + 1}',
-                    'ready': False,
-                    'connected': True
-                }
-                self.scores[player_id] = 0
-            
-            self.send_message(client, {
-                'type': 'welcome',
-                'player_id': player_id,
-                'message': f'Welcome Player {player_id + 1}! Please set your name.'
-            })
-            
-            self.broadcast({
-                'type': 'player_joined',
-                'player_id': player_id,
-                'name': f'Player {player_id + 1}',
-                'total_players': len(self.clients)
-            })
-            
-            thread = threading.Thread(target=self.handle_client, args=(client, player_id))
-            thread.start()
-            
-            print(f"Player {player_id + 1} connected from {addr}")
+                    'total_players': len(self.clients)
+                })
+                
+                thread = threading.Thread(target=self.handle_client, args=(client, player_id))
+                thread.daemon = True
+                thread.start()
+                
+                print(f"Player {player_id + 1} connected from {addr}")
+        except KeyboardInterrupt:
+            print("\nServer shutting down...")
+            self.shutting_down = True
+            self.end_game_all("Server shutting down")
+        finally:
+            server.close()
     
     def send_message(self, client, data):
         try:
@@ -86,36 +95,122 @@ class CardBattleServer:
         for client in list(self.clients):
             if client in exclude:
                 continue
-            try:
-                self.send_message(client, data)
-            except:
-                pass
+            if self.client_info.get(client, {}).get('connected', False):
+                try:
+                    self.send_message(client, data)
+                except:
+                    pass
     
     def broadcast_to_all(self, data):
         for client in list(self.clients):
-            try:
-                self.send_message(client, data)
-            except:
-                pass
+            if self.client_info.get(client, {}).get('connected', False):
+                try:
+                    self.send_message(client, data)
+                except:
+                    pass
+    
+    def end_game_all(self, reason):
+        """End game for all players with a reason"""
+        end_message = {
+            'type': 'game_end',
+            'final_scores': self.scores.copy(),
+            'champions': [],
+            'round_results': self.round_results,
+            'reason': reason,
+            'forced_shutdown': True
+        }
+        
+        for client in list(self.clients):
+            if self.client_info.get(client, {}).get('connected', False):
+                try:
+                    self.send_message(client, end_message)
+                    client.close()
+                except:
+                    pass
+        
+        print(f"Game ended: {reason}")
+    
+    def handle_client_disconnect(self, client, player_id):
+        """Handle player disconnection"""
+        with self.lock:
+            if client in self.clients:
+                self.clients.remove(client)
+            
+            if client in self.client_info:
+                self.client_info[client]['connected'] = False
+                player_name = self.client_info[client]['name']
+                
+                if self.client_info[client]['ready']:
+                    self.players_ready -= 1
+                    self.client_info[client]['ready'] = False
+            
+            print(f"Player {player_id + 1} ({player_name}) disconnected")
+            
+            # Update scores to remove disconnected player
+            if player_id in self.scores:
+                del self.scores[player_id]
+        
+        if self.game_started:
+            # If game is in progress, end it for everyone
+            disconnect_reason = f"Player {player_name} disconnected"
+            self.broadcast_to_all({
+                'type': 'player_disconnected',
+                'player_id': player_id,
+                'name': player_name,
+                'reason': disconnect_reason
+            })
+            
+            time.sleep(0.5)  # Give clients time to process message
+            
+            # Send game end message
+            self.end_game_all(disconnect_reason)
+            
+            # Reset server state
+            self.__init__(self.port)
+        else:
+            # If game hasn't started, just update player list
+            self.broadcast({
+                'type': 'player_left',
+                'player_id': player_id,
+                'ready_count': self.players_ready,
+                'total_players': len(self.clients)
+            })
     
     def handle_client(self, client, player_id):
         try:
+            buffer = ''
             while True:
-                data = client.recv(1024).decode().strip()
-                if not data:
+                if self.shutting_down:
+                    break
+                    
+                try:
+                    client.settimeout(1.0)
+                    data = client.recv(1024).decode()
+                    if not data:
+                        break
+                    
+                    buffer += data
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        if line:
+                            try:
+                                message = json.loads(line)
+                                self.process_message(client, player_id, message)
+                            except json.JSONDecodeError:
+                                print(f"Invalid JSON from player {player_id + 1}")
+                                continue
+                except socket.timeout:
+                    continue
+                except ConnectionError:
+                    break
+                except Exception as e:
+                    print(f"Error receiving from player {player_id + 1}: {e}")
                     break
                 
-                try:
-                    message = json.loads(data)
-                    self.process_message(client, player_id, message)
-                except json.JSONDecodeError:
-                    print(f"Invalid JSON from player {player_id + 1}")
-                    continue
-                
         except Exception as e:
-            print(f"Player {player_id + 1} disconnected: {e}")
+            print(f"Player {player_id + 1} connection error: {e}")
         finally:
-            self.handle_disconnect(client, player_id)
+            self.handle_client_disconnect(client, player_id)
     
     def process_message(self, client, player_id, message):
         msg_type = message['type']
@@ -156,6 +251,9 @@ class CardBattleServer:
         elif msg_type == 'select_card':
             if not self.game_started:
                 print(f"Game not started yet, but player {player_id + 1} tried to select card")
+                return
+                
+            if not self.client_info[client]['connected']:
                 return
                 
             card = message['card']
@@ -221,6 +319,9 @@ class CardBattleServer:
         
         with self.lock:
             for i, client in enumerate(self.clients):
+                if not self.client_info[client]['connected']:
+                    continue
+                    
                 start_idx = i * 7
                 end_idx = start_idx + 7
                 cards = self.deck[start_idx:end_idx]
@@ -315,34 +416,6 @@ class CardBattleServer:
         
         print("Resetting game state...")
         self.__init__(self.port)
-    
-    def handle_disconnect(self, client, player_id):
-        print(f"\nPlayer {player_id + 1} disconnected")
-        
-        with self.lock:
-            if client in self.clients:
-                self.clients.remove(client)
-            if client in self.client_info:
-                del self.client_info[client]
-        
-        if self.game_started:
-            print("Game in progress, cancelling due to player disconnect")
-            self.broadcast({
-                'type': 'player_left',
-                'player_id': player_id,
-                'message': 'Game cancelled due to player disconnect'
-            })
-            self.__init__(self.port)
-        else:
-            with self.lock:
-                self.players_ready = sum(1 for c in self.clients if self.client_info.get(c, {}).get('ready', False))
-            
-            self.broadcast({
-                'type': 'player_left',
-                'player_id': player_id,
-                'ready_count': self.players_ready,
-                'total_players': len(self.clients)
-            })
 
 if __name__ == '__main__':
     import sys

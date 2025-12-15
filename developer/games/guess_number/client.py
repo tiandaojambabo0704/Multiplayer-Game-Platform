@@ -28,8 +28,11 @@ class GuessNumberClient:
     def receive_messages(self):
         while self.running:
             try:
+                self.socket.settimeout(1.0)
                 message = self.socket.recv(1024).decode('utf-8')
                 if not message:
+                    print("\n[System] Connection lost with server")
+                    self.running = False
                     break
                 
                 if "GAME_END" in message:
@@ -45,8 +48,16 @@ class GuessNumberClient:
                 sys.stdout.write(message)
                 sys.stdout.flush()
                 
+            except socket.timeout:
+                continue 
+            except ConnectionError:
+                print("\n[System] Lost connection to server")
+                self.running = False
+                break
             except Exception as e:
-                print(f"\nConnection error: {e}")
+                if self.running: 
+                    print(f"\nConnection error: {e}")
+                self.running = False
                 break
     
     def run(self):
@@ -67,27 +78,45 @@ class GuessNumberClient:
                         sys.stdout.write("> ")
                         sys.stdout.flush()
                         guess = sys.stdin.readline().strip()
+                        
                         if not self.running:
                             break
                         
                         if guess.lower() == 'quit':
+                            print("\n[You] Quitting game...")
+                            self.running = False
                             break
                             
                         self.socket.sendall((guess + '\n').encode())
                         self.is_my_turn = False
+                        
                     except EOFError:
+                        print("\n[You] End of input detected")
+                        self.running = False
+                        break
+                    except KeyboardInterrupt:
+                        print("\n\n[You] Interrupted by user")
+                        self.running = False
+                        break
+                    except Exception as e:
+                        print(f"\nInput error: {e}")
+                        self.running = False
                         break
                 else:
                     import time
                     time.sleep(0.1)
                     
         except KeyboardInterrupt:
-            print("\n\nGame interrupted by user.")
+            print("\n\n[You] Game interrupted by user")
         except Exception as e:
             print(f"\nError: {e}")
         finally:
-            self.socket.close()
-            print("Disconnected from server.")
+            self.running = False
+            try:
+                self.socket.close()
+            except:
+                pass
+            print("\nDisconnected from server.")
 
 if __name__ == '__main__':
     host = sys.argv[1] if len(sys.argv) > 1 else 'localhost'

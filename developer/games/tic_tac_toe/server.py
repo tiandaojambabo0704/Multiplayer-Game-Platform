@@ -17,6 +17,7 @@ class TicTacToeServer:
         self.board = [['' for _ in range(3)] for _ in range(3)]
         self.current_player = 0
         self.game_over = False
+        self.players_active = [False, False]  # Track active players
         
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -30,8 +31,9 @@ class TicTacToeServer:
             client, addr = server.accept()
             player_num = len(self.clients)
             self.clients.append(client)
+            self.players_active[player_num] = True
             symbol = 'X' if player_num == 0 else 'O'
-            print(f"Player {player_num + 1} ({symbol}) connected")
+            print(f"Player {player_num + 1} ({symbol}) connected from {addr}")
             self.send_message(client, {
                 'type': 'init',
                 'player': player_num,
@@ -43,7 +45,15 @@ class TicTacToeServer:
         
         for i, client in enumerate(self.clients):
             thread = threading.Thread(target=self.handle_client, args=(client, i))
+            thread.daemon = True
             thread.start()
+        
+        # Keep server running
+        try:
+            while not self.game_over:
+                threading.Event().wait(0.1)
+        except KeyboardInterrupt:
+            self.end_game("Server stopped")
     
     def send_message(self, client, data):
         try:
@@ -53,8 +63,26 @@ class TicTacToeServer:
             pass
     
     def broadcast(self, data):
-        for client in self.clients:
-            self.send_message(client, data)
+        for i, client in enumerate(self.clients):
+            if self.players_active[i]:
+                self.send_message(client, data)
+    
+    def end_game(self, reason):
+        if self.game_over:
+            return
+        
+        self.game_over = True
+        print(f"[System] Game ended: {reason}")
+        
+        end_msg = {'type': 'end', 'result': 'disconnect', 'reason': reason}
+        
+        for i, client in enumerate(self.clients):
+            if self.players_active[i]:
+                try:
+                    self.send_message(client, end_msg)
+                    client.close()
+                except:
+                    pass
     
     def check_winner(self):
         # Check rows
@@ -79,16 +107,39 @@ class TicTacToeServer:
         
         return None
     
+    def handle_client_disconnect(self, player_num):
+        self.players_active[player_num] = False
+        
+        if self.game_over:
+            return
+        
+        reason = f"Player {player_num + 1} disconnected"
+        print(f"[System] {reason}")
+        
+        # Notify other player
+        other_player = 1 - player_num
+        if self.players_active[other_player]:
+            disconnect_msg = {'type': 'disconnect', 'reason': reason}
+            self.send_message(self.clients[other_player], disconnect_msg)
+        
+        # End the game
+        self.end_game(reason)
+    
     def handle_client(self, client, player_num):
         try:
             while not self.game_over:
                 data = client.recv(1024).decode().strip()
                 if not data:
+                    # Client disconnected
+                    self.handle_client_disconnect(player_num)
                     break
                 
                 message = json.loads(data)
                 
                 if message['type'] == 'move':
+                    if not self.players_active[player_num]:
+                        break
+                        
                     if player_num != self.current_player:
                         self.send_message(client, {'type': 'error', 'message': 'Not your turn!'})
                         continue
@@ -123,10 +174,18 @@ class TicTacToeServer:
                     self.current_player = 1 - self.current_player
                     self.broadcast({'type': 'turn', 'player': self.current_player})
         
+        except ConnectionError:
+            self.handle_client_disconnect(player_num)
+        except json.JSONDecodeError:
+            self.handle_client_disconnect(player_num)
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error with player {player_num + 1}: {e}")
+            self.handle_client_disconnect(player_num)
         finally:
-            client.close()
+            try:
+                client.close()
+            except:
+                pass
 
 if __name__ == '__main__':
     import sys
