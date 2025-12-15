@@ -28,6 +28,7 @@ class GameStoreServer:
         self.db = Database()
         self.uploaded_games_dir = "uploaded_games"
         os.makedirs(self.uploaded_games_dir, exist_ok=True)
+        self.public_ip=self.get_public_ip()
         
         self.active_sessions = {}  
         
@@ -65,6 +66,13 @@ class GameStoreServer:
                     process.terminate()
                 except:
                     pass
+    
+    def get_public_ip(self):
+        try:
+            return "172.18.8.112"
+        except:
+            return self.host
+
     
     def cleanup_game_servers(self):
         rooms_to_remove = []
@@ -859,7 +867,7 @@ class GameStoreServer:
             
             return {
                 'success': True,
-                'host': self.host,
+                'host': self.public_ip,
                 'port': self.game_ports[room_id],
                 'room_id': room_id
             }
