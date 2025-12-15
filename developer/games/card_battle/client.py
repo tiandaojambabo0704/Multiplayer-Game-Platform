@@ -5,6 +5,7 @@ import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
+import time
 
 class CardBattleClient:
     def __init__(self, host='localhost', port=6002):
@@ -22,6 +23,7 @@ class CardBattleClient:
         self.played_cards = []  
         self.receive_thread = None
         self.running = True
+        self.game_ended = False 
         
         # GUI
         self.root = tk.Tk()
@@ -338,7 +340,19 @@ class CardBattleClient:
             
             self.show_final_results(final_scores, champions)
             
-            self.reset_game()
+            self.game_ended = True
+            self.root.after(3000, self.close_window) 
+    
+    def close_window(self):
+        self.running = False
+        try:
+            self.socket.close()
+        except:
+            pass
+        self.root.quit()
+        self.root.destroy()
+        print("Game over, Window closed")
+        sys.exit(0)  
     
     def handle_disconnect(self):
         if self.running:
@@ -491,23 +505,15 @@ class CardBattleClient:
         
         self.result_text.insert(tk.END, "\n" + "="*30 + "\n")
         
+        self.result_text.insert(tk.END, "\nThe window will close in 3 seconds...\n")
+        
         self.result_text.see(tk.END)
         self.result_text.config(state=tk.DISABLED)
         
-        self.play_status.config(text="Game Over! Check the results panel.")
+        self.play_status.config(text="Game over! The window will close in 3 seconds.")
     
     def reset_game(self):
-        self.cards = []
-        self.remaining_cards = []
-        self.played_cards = []
-        self.scores = {}
-        self.current_round = 0
-        self.selected_this_round = False
-        self.create_card_buttons()
-        self.round_label.config(text="Round: 0/7")
-        self.selection_label.config(text="Not selected yet")
-        self.ready_btn.config(text="Ready", state=tk.DISABLED)
-        self.set_name_btn.config(state=tk.NORMAL)
+        pass
     
     def run(self):
         if self.connect():

@@ -1,0 +1,9 @@
+{
+    "game_name": "Multiplayer Game Template",
+    "type": "gui",
+    "min_players": 2,
+    "max_players": 5,
+    "server_command": "python server.py",
+    "client_command": "python client.py",
+    "description": "A template for multiplayer GUI games with lobby system"
+}

@@ -1,0 +1,9 @@
+{
+    "game_name": "Game Template",
+    "type": "cli",
+    "min_players": 2,
+    "max_players": 2,
+    "server_command": "python server.py",
+    "client_command": "python client.py",
+    "description": "A template for CLI games. Override methods to create custom games."
+}

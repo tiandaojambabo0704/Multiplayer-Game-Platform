@@ -8,7 +8,7 @@ import zipfile
 from datetime import datetime
 
 class DeveloperClient:
-    def __init__(self, host='140.113.69.12', port=20113):
+    def __init__(self, host='172.18.8.112', port=20113):
         self.host = host
         self.port = port
         self.socket = None
