@@ -20,7 +20,7 @@ else:
     locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
 
 class PlayerClient:
-    def __init__(self, host='140.113.69.12', port=30113):
+    def __init__(self, host='172.18.8.112', port=30113):
         self.host = host
         self.port = port
         self.socket = None
@@ -1223,9 +1223,6 @@ class PlayerClient:
         
         ttk.Label(info_grid, text=f"遊戲: {room_data.get('game_name', room_data['game_id'])}",
                 font=("Arial", 10)).grid(row=1, column=0, sticky=tk.W, pady=2)
-        
-        ttk.Label(info_grid, text=f"人數: {len(room_data['players'])}/{room_data.get('max_players', 4)}",
-                font=("Arial", 10)).grid(row=1, column=1, sticky=tk.W, pady=2, padx=20)
         
         ttk.Label(info_grid, text=f"房主: {room_data['host']}",
                 font=("Arial", 10)).grid(row=2, column=0, sticky=tk.W, pady=2)
