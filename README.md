@@ -1,4 +1,4 @@
-# NP HW3
+# Multiplayer Game Platform
 
 ## 結構說明
 
