@@ -3,7 +3,7 @@
 ## 結構說明
 
 ```text
-112550113_NP_HW3/
+Multiplayer Game Platform/
 ├── server/             # Server 端
 │   ├── server.py         # 主啟動程式
 │   ├── database.py       # 資料庫
